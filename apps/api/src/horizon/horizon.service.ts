@@ -5,8 +5,9 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { Horizon } from '@stellar/stellar-sdk';
+import { PriceService, PriceEvent } from '../price/price.service';
+import { PoolsService } from '../pools/pools.service';
 import { CacheService } from '../cache/cache.service';
-import { PriceEvent } from '../price/price.service';
 
 @Injectable()
 export class HorizonService implements OnModuleInit, OnModuleDestroy {
@@ -16,7 +17,11 @@ export class HorizonService implements OnModuleInit, OnModuleDestroy {
   private cursor = 'now';
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly cache: CacheService) {
+  constructor(
+    private readonly priceService: PriceService,
+    private readonly poolsService: PoolsService,
+     private readonly cache: CacheService,
+  ) {
     this.server = new Horizon.Server(
       process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org',
     );
@@ -49,6 +54,13 @@ export class HorizonService implements OnModuleInit, OnModuleDestroy {
       for (const record of page.records) {
         this.cursor = record.paging_token;
         const event = this.toPrice(record as unknown as EffectRecord);
+        if (!event) continue;
+
+        this.priceService.broadcastPrice(event);
+        await this.poolsService.handlePoolStateUpdate(event.poolId, {
+          currentPrice: event.currentPrice,
+        });
+        
         if (event) {
           await this.cache.publish(
             `prices:${event.poolId}`,
