@@ -14,22 +14,14 @@ export function TokenLogo({ token, size = 24 }: { token: Token; size?: number })
   if (token.logoUrl) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={token.logoUrl}
-        alt={token.symbol}
-        width={size}
-        height={size}
-        className="rounded-full object-cover"
-        style={{ width: size, height: size }}
-      />
+      <img src={token.logoUrl} alt={token.symbol} width={size} height={size}
+        className="rounded-full object-cover" style={{ width: size, height: size }} />
     );
   }
   return (
-    <span
-      aria-hidden="true"
+    <span aria-hidden="true"
       className={`inline-flex items-center justify-center rounded-full text-white font-bold ${colorFor(token.symbol)}`}
-      style={{ width: size, height: size, fontSize: size * 0.38 }}
-    >
+      style={{ width: size, height: size, fontSize: size * 0.38 }}>
       {token.symbol.slice(0, 2).toUpperCase()}
     </span>
   );
