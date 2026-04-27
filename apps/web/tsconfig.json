@@ -20,7 +20,8 @@
       }
     ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@swyft/ui": ["../../packages/ui/src/index.ts"]
     }
   },
   "include": [
