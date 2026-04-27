@@ -1,34 +1,14 @@
-import {
-  Controller,
-  Get,
-  UnauthorizedException,
-  Headers,
-} from '@nestjs/common';
-import { IndexerMonitorService } from './indexer-monitor.service';
+import { Controller, Get, Headers, UnauthorizedException } from '@nestjs/common';
+import { DbMetricsService } from './db-metrics.service';
 
-@Controller()
+@Controller('metrics')
 export class MetricsController {
-  constructor(private readonly monitor: IndexerMonitorService) {}
+  constructor(private readonly dbMetrics: DbMetricsService) {}
 
-  @Get('metrics/indexer')
-  async getIndexerMetrics(@Headers('x-api-key') apiKey: string) {
+  @Get('db')
+  async getDbMetrics(@Headers('x-internal-key') key: string) {
     const expected = process.env.INTERNAL_API_KEY;
-    if (!expected || apiKey !== expected) {
-      throw new UnauthorizedException('Invalid API key');
-    }
-    return this.monitor.getMetrics();
-  }
-
-  @Get('health')
-  async getHealth() {
-    const metrics = await this.monitor.getMetrics();
-    return {
-      status: 'ok',
-      indexer: {
-        status: metrics.status,
-        lagLedgers: metrics.lagLedgers,
-        lagSeconds: metrics.lagSeconds,
-      },
-    };
+    if (!expected || key !== expected) throw new UnauthorizedException();
+    return this.dbMetrics.snapshot();
   }
 }

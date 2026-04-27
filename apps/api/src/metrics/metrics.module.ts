@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
+import { DbMetricsService } from './db-metrics.service';
 import { MetricsController } from './metrics.controller';
-import { IndexerMonitorService } from './indexer-monitor.service';
 
 @Module({
+  providers: [DbMetricsService],
   controllers: [MetricsController],
-  providers: [IndexerMonitorService],
+  exports: [DbMetricsService],
 })
 export class MetricsModule {}

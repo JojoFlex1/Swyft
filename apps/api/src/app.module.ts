@@ -8,20 +8,22 @@ import { PoolsModule } from './pools/pools.module';
 import { PositionsModule } from './positions/positions.module';
 import { SwapsModule } from './swaps/swaps.module';
 import { IndexerModule } from './indexer/indexer.module';
-import { TokensModule } from './tokens/tokens.module';
+import { PrismaModule } from './prisma/prisma.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
     CacheModule,
+    PrismaModule,
+    MetricsModule,
     PriceModule,
     PoolsModule,
     PositionsModule,
     SwapsModule,
     HorizonModule,
     IndexerModule,
-    TokensModule,
-    MetricsModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
