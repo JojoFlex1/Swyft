@@ -12,6 +12,7 @@ export interface PoolListItem {
   feeTier: string;
   tvl: number;
   volume24h: number;
+  volume7d: number;
   feeApr: number;
   currentPrice: number;
 }

@@ -104,7 +104,9 @@ export default function PoolsPage() {
         <td className="px-4 py-3 text-right text-zinc-700 dark:text-zinc-300">
           {fmt(pool.volume24h)}
         </td>
-        <td className="px-4 py-3 text-right text-zinc-700 dark:text-zinc-300">—</td>
+        <td className="px-4 py-3 text-right text-zinc-700 dark:text-zinc-300">
+          {fmt(pool.volume7d)}
+        </td>
         <td className="px-4 py-3 text-right font-medium text-emerald-600 dark:text-emerald-400">
           {fmtApr(pool.feeApr)}
         </td>
@@ -112,7 +114,7 @@ export default function PoolsPage() {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              router.push(`/pools/${pool.id}/add`);
+              router.push(`/pools/${pool.id}/add-liquidity`);
             }}
             className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 transition-colors"
           >
