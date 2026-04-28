@@ -25,45 +25,32 @@ describe('Pools Ticks Integration', () => {
 
   describe('GET /pools/:id/ticks', () => {
     const testPoolId = 'test_pool_123';
+    const emptyPoolId = 'empty_pool_123';
 
     beforeEach(async () => {
-      // Clean up any existing test data
-      await prisma.tick.deleteMany({ where: { poolId: testPoolId } });
-      
-      // Insert test ticks
+      await prisma.tick.deleteMany({ where: { poolId: { in: [testPoolId, emptyPoolId] } } });
+      await prisma.poolCreated.deleteMany({ where: { poolId: { in: [testPoolId, emptyPoolId] } } });
+
+      // Seed pool existence records
+      await prisma.poolCreated.createMany({
+        data: [
+          { eventId: `evt_${testPoolId}`, poolId: testPoolId, tokenA: 'USDC', tokenB: 'XLM', fee: '3000', sqrtPriceX96: '0' },
+          { eventId: `evt_${emptyPoolId}`, poolId: emptyPoolId, tokenA: 'USDC', tokenB: 'XLM', fee: '3000', sqrtPriceX96: '0' },
+        ],
+      });
+
       await prisma.tick.createMany({
         data: [
-          {
-            poolId: testPoolId,
-            tickIndex: -276324,
-            liquidityNet: '1000000000000000000',
-            liquidityGross: '1000000000000000000',
-            feeGrowthOutside0X128: '0',
-            feeGrowthOutside1X128: '0',
-          },
-          {
-            poolId: testPoolId,
-            tickIndex: -276320,
-            liquidityNet: '500000000000000000',
-            liquidityGross: '1500000000000000000',
-            feeGrowthOutside0X128: '100000000000000000000000000000000000',
-            feeGrowthOutside1X128: '200000000000000000000000000000000000',
-          },
-          {
-            poolId: testPoolId,
-            tickIndex: -276316,
-            liquidityNet: '-500000000000000000',
-            liquidityGross: '500000000000000000',
-            feeGrowthOutside0X128: '150000000000000000000000000000000000',
-            feeGrowthOutside1X128: '300000000000000000000000000000000000',
-          },
+          { poolId: testPoolId, tickIndex: -276324, liquidityNet: '1000000000000000000', liquidityGross: '1000000000000000000', feeGrowthOutside0X128: '0', feeGrowthOutside1X128: '0' },
+          { poolId: testPoolId, tickIndex: -276320, liquidityNet: '500000000000000000', liquidityGross: '1500000000000000000', feeGrowthOutside0X128: '100000000000000000000000000000000000', feeGrowthOutside1X128: '200000000000000000000000000000000000' },
+          { poolId: testPoolId, tickIndex: -276316, liquidityNet: '-500000000000000000', liquidityGross: '500000000000000000', feeGrowthOutside0X128: '150000000000000000000000000000000000', feeGrowthOutside1X128: '300000000000000000000000000000000000' },
         ],
       });
     });
 
     afterEach(async () => {
-      // Clean up test data
-      await prisma.tick.deleteMany({ where: { poolId: testPoolId } });
+      await prisma.tick.deleteMany({ where: { poolId: { in: [testPoolId, emptyPoolId] } } });
+      await prisma.poolCreated.deleteMany({ where: { poolId: { in: [testPoolId, emptyPoolId] } } });
     });
 
     it('should return all ticks for a pool', async () => {
@@ -102,8 +89,6 @@ describe('Pools Ticks Integration', () => {
     });
 
     it('should return empty array for pool with no ticks', async () => {
-      const emptyPoolId = 'empty_pool_123';
-      
       const response = await request(app.getHttpServer())
         .get(`/pools/${emptyPoolId}/ticks`)
         .expect(200);
