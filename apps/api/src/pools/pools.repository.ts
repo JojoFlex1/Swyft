@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { PoolListQuery, PoolListResult, PoolSnapshot } from './pool.types';
+import { PoolListQuery, PoolListResult, PoolSnapshot, TickData, GetTicksQuery } from './pool.types';
+import { PrismaService } from '../prisma/prisma.service';
 
 type PoolStatePatch = {
   currentPrice?: string;
@@ -8,6 +9,13 @@ type PoolStatePatch = {
 @Injectable()
 export class PoolsRepository {
   private readonly pools = new Map<string, PoolSnapshot>();
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async poolExists(id: string): Promise<boolean> {
+    const count = await this.prisma.poolCreated.count({ where: { poolId: id } });
+    return count > 0;
+  }
 
   async listActivePools(query: PoolListQuery): Promise<PoolListResult> {
     const search = query.search?.trim().toLowerCase();
@@ -50,5 +58,48 @@ export class PoolsRepository {
       currentPrice,
       updatedAt: Date.now(),
     });
+  }
+
+  async getTicks(query: GetTicksQuery): Promise<TickData[]> {
+    const where: any = {
+      poolId: query.poolId,
+    };
+
+    if (query.lowerTick !== undefined && query.upperTick !== undefined) {
+      where.tickIndex = {
+        gte: query.lowerTick,
+        lte: query.upperTick,
+      };
+    } else if (query.lowerTick !== undefined) {
+      where.tickIndex = {
+        gte: query.lowerTick,
+      };
+    } else if (query.upperTick !== undefined) {
+      where.tickIndex = {
+        lte: query.upperTick,
+      };
+    }
+
+    const ticks = await this.prisma.tick.findMany({
+      where,
+      orderBy: {
+        tickIndex: 'asc',
+      },
+      select: {
+        tickIndex: true,
+        liquidityNet: true,
+        liquidityGross: true,
+        feeGrowthOutside0X128: true,
+        feeGrowthOutside1X128: true,
+      },
+    });
+
+    return ticks.map((tick) => ({
+      tickIndex: tick.tickIndex,
+      liquidityNet: tick.liquidityNet,
+      liquidityGross: tick.liquidityGross,
+      feeGrowthOutside0X128: tick.feeGrowthOutside0X128,
+      feeGrowthOutside1X128: tick.feeGrowthOutside1X128,
+    }));
   }
 }
