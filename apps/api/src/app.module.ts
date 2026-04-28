@@ -11,6 +11,7 @@ import { IndexerModule } from './indexer/indexer.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { AdminModule } from './admin/admin.module';
+import { SearchModule } from './search/search.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AdminModule } from './admin/admin.module';
     HorizonModule,
     IndexerModule,
     AdminModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [AppService],
