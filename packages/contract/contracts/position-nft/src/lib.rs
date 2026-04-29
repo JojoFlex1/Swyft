@@ -1,28 +1,18 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec};
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const KEY_MINTER: Symbol = symbol_short!("MINTER");
-const KEY_NEXT_ID: Symbol = symbol_short!("NEXT_ID");
-const KEY_POSITION: &[u8] = b"POSITION";
+// ── Storage keys ──────────────────────────────────────────────────────────────
 
-// ── Error Types ──────────────────────────────────────────────────────────────
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[repr(u32)]
-pub enum PositionNftError {
-    NotAuthorized = 1,
-    PositionNotFound = 2,
-    NotInitialized = 3,
-    Overflow = 4,
+#[contracttype]
+#[derive(Clone)]
+enum DataKey {
+    Minter,
+    NextId,
+    Position(u64),
 }
 
-impl From<PositionNftError> for soroban_sdk::Error {
-    fn from(e: PositionNftError) -> Self {
-        soroban_sdk::Error::from_contract_error(e as u32)
-    }
-}
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-// ── Types ────────────────────────────────────────────────────────────────────
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMetadata {
@@ -31,34 +21,27 @@ pub struct PositionMetadata {
     pub tick_lower: i32,
     pub tick_upper: i32,
     pub liquidity: u128,
-    pub created_at: u64, // Unix timestamp
+    pub created_at: u64,
 }
 
-// ── Contract ─────────────────────────────────────────────────────────────────
+// ── Contract ──────────────────────────────────────────────────────────────────
+
 #[contract]
 pub struct PositionNft;
 
 #[contractimpl]
 impl PositionNft {
-    /// Returns the name of the contract.
-    pub fn name(_env: Env) -> Symbol {
-        Symbol::new(&_env, "position_nft")
-    }
-
-    /// Initialize the position NFT contract with a minter address.
-    /// Only callable once.
-    pub fn initialize(env: Env, minter: Address) -> Result<(), PositionNftError> {
-        minter.require_auth();
-        if env.storage().instance().has(&KEY_MINTER) {
-            return Err(PositionNftError::NotAuthorized);
+    /// One-time initialisation. `minter` is the pool contract address.
+    pub fn initialize(env: Env, minter: Address) {
+        if env.storage().instance().has(&DataKey::Minter) {
+            panic!("already initialized");
         }
-        env.storage().instance().set(&KEY_MINTER, &minter);
-        env.storage().instance().set(&KEY_NEXT_ID, &0u64);
-        Ok(())
+        env.storage().instance().set(&DataKey::Minter, &minter);
+        env.storage().instance().set(&DataKey::NextId, &0u64);
     }
 
-    /// Mint a new position NFT and assign it to the owner.
-    /// Only callable by the minter (pool contract).
+    /// Mint a new position NFT. Only callable by the minter (pool contract).
+    /// Returns the new token ID.
     pub fn mint(
         env: Env,
         owner: Address,
@@ -66,13 +49,13 @@ impl PositionNft {
         tick_lower: i32,
         tick_upper: i32,
         liquidity: u128,
-    ) -> Result<u64, PositionNftError> {
-        require_minter(&env)?;
+    ) -> u64 {
+        require_minter(&env);
 
         let id: u64 = env
             .storage()
             .instance()
-            .get(&KEY_NEXT_ID)
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
 
         // Check for overflow
@@ -88,143 +71,100 @@ impl PositionNft {
             tick_lower,
             tick_upper,
             liquidity,
-            created_at,
+            created_at: env.ledger().timestamp(),
         };
 
-        let mut key = Vec::new(&env);
-        key.push_back(symbol_short!("POS"));
-        key.push_back(Symbol::new(&env, &id.to_string()));
+        env.storage().persistent().set(&DataKey::Position(id), &meta);
+        env.storage().instance().set(&DataKey::NextId, &(id + 1));
 
-        env.storage().persistent().set(&key, &meta);
-        env.storage()
-            .instance()
-            .set(&KEY_NEXT_ID, &(id.checked_add(1).ok_or(PositionNftError::Overflow)?));
+        // Transfer event: zero address → owner
+        emit_transfer(&env, None, Some(owner), id);
 
-        // Emit Transfer event: (from=0, to=owner, token_id)
-        env.events().publish(
-            (symbol_short!("transfer"), symbol_short!("nft")),
-            (Symbol::new(&env, "0x0"), owner, id),
-        );
-
-        Ok(id)
+        id
     }
 
-    /// Burn a position NFT, removing it from existence.
-    /// Only callable by the minter (pool contract).
-    pub fn burn(env: Env, token_id: u64) -> Result<(), PositionNftError> {
-        require_minter(&env)?;
+    /// Burn a position NFT. Only callable by the minter (pool contract).
+    pub fn burn(env: Env, token_id: u64) {
+        require_minter(&env);
 
-        let mut key = Vec::new(&env);
-        key.push_back(symbol_short!("POS"));
-        key.push_back(Symbol::new(&env, &token_id.to_string()));
+        let meta: PositionMetadata = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Position(token_id))
+            .expect("token not found");
 
-        // Get the position to emit event with the owner
-        let position: Option<PositionMetadata> = env.storage().persistent().get(&key);
-        if position.is_none() {
-            return Err(PositionNftError::PositionNotFound);
-        }
+        env.storage().persistent().remove(&DataKey::Position(token_id));
 
-        let owner = position.unwrap().owner;
-        env.storage().persistent().remove(&key);
-
-        // Emit Transfer event: (from=owner, to=0, token_id)
-        env.events().publish(
-            (symbol_short!("transfer"), symbol_short!("nft")),
-            (owner, Symbol::new(&env, "0x0"), token_id),
-        );
-
-        Ok(())
+        // Transfer event: owner → zero address
+        emit_transfer(&env, Some(meta.owner), None, token_id);
     }
 
-    /// Transfer a position NFT from one address to another.
-    /// The sender must be the current owner of the position.
-    pub fn transfer(
-        env: Env,
-        token_id: u64,
-        from: Address,
-        to: Address,
-    ) -> Result<(), PositionNftError> {
+    /// Transfer a position NFT between addresses. Callable by the current owner.
+    pub fn transfer(env: Env, from: Address, to: Address, token_id: u64) {
         from.require_auth();
 
-        let mut key = Vec::new(&env);
-        key.push_back(symbol_short!("POS"));
-        key.push_back(Symbol::new(&env, &token_id.to_string()));
-
-        let mut position: PositionMetadata = env
+        let mut meta: PositionMetadata = env
             .storage()
             .persistent()
-            .get(&key)
-            .ok_or(PositionNftError::PositionNotFound)?;
+            .get(&DataKey::Position(token_id))
+            .expect("token not found");
 
-        // Verify the sender is the current owner
-        if position.owner != from {
-            return Err(PositionNftError::NotAuthorized);
+        if meta.owner != from {
+            panic!("not owner");
         }
 
-        // Update the owner
-        position.owner = to.clone();
-        env.storage().persistent().set(&key, &position);
+        meta.owner = to.clone();
+        env.storage().persistent().set(&DataKey::Position(token_id), &meta);
 
-        // Emit Transfer event
-        env.events().publish(
-            (symbol_short!("transfer"), symbol_short!("nft")),
-            (from, to, token_id),
-        );
-
-        Ok(())
+        emit_transfer(&env, Some(from), Some(to), token_id);
     }
 
-    /// Get the owner of a position NFT.
-    pub fn owner_of(env: Env, token_id: u64) -> Result<Address, PositionNftError> {
-        let mut key = Vec::new(&env);
-        key.push_back(symbol_short!("POS"));
-        key.push_back(Symbol::new(&env, &token_id.to_string()));
-
-        let position: PositionMetadata = env
+    /// Returns the current owner of a token.
+    pub fn owner_of(env: Env, token_id: u64) -> Address {
+        let meta: PositionMetadata = env
             .storage()
             .persistent()
-            .get(&key)
-            .ok_or(PositionNftError::PositionNotFound)?;
-
-        Ok(position.owner)
+            .get(&DataKey::Position(token_id))
+            .expect("token not found");
+        meta.owner
     }
 
-    /// Get the complete metadata of a position NFT.
-    pub fn get_position(
-        env: Env,
-        token_id: u64,
-    ) -> Result<PositionMetadata, PositionNftError> {
-        let mut key = Vec::new(&env);
-        key.push_back(symbol_short!("POS"));
-        key.push_back(Symbol::new(&env, &token_id.to_string()));
-
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(PositionNftError::PositionNotFound)
+    /// Returns full metadata for a token.
+    pub fn get_position(env: Env, token_id: u64) -> Option<PositionMetadata> {
+        env.storage().persistent().get(&DataKey::Position(token_id))
     }
 
-    /// Get the total number of positions ever minted (next ID to be issued).
-    pub fn total_supply(env: Env) -> u64 {
+    /// Returns the next token ID (== total minted, since IDs are never reused).
+    pub fn next_id(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&KEY_NEXT_ID)
+            .get(&DataKey::NextId)
             .unwrap_or(0u64)
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Verify that the caller is the minter address.
-fn require_minter(env: &Env) -> Result<(), PositionNftError> {
+fn require_minter(env: &Env) {
     let minter: Address = env
         .storage()
         .instance()
-        .get(&KEY_MINTER)
-        .ok_or(PositionNftError::NotInitialized)?;
+        .get(&DataKey::Minter)
+        .expect("not initialized");
     minter.require_auth();
     Ok(())
 }
+
+/// Emit a Transfer event compatible with the SDK / frontend.
+/// `from = None` means mint (from zero), `to = None` means burn (to zero).
+fn emit_transfer(env: &Env, from: Option<Address>, to: Option<Address>, token_id: u64) {
+    env.events().publish(
+        (Symbol::new(env, "Transfer"),),
+        (from, to, token_id),
+    );
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod test;

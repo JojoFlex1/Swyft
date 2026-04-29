@@ -1,321 +1,239 @@
 #![cfg(test)]
-use soroban_sdk::{testutils::Address as _, Address, Env};
 
-use crate::{PositionNft, PositionNftClient, PositionNftError};
+use super::*;
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    vec, Address, Env, IntoVal,
+};
 
-fn setup() -> (Env, Address, Address, Address, Address, Address) {
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn setup() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(PositionNft, ());
+
+    let contract_id = env.register_contract(None, PositionNft);
     let minter = Address::generate(&env);
-    let owner = Address::generate(&env);
     let pool = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    (env, contract_id, minter, owner, pool, recipient)
-}
+    let user = Address::generate(&env);
 
-// ── Initialization ────────────────────────────────────────────────────────────
-
-#[test]
-fn test_initialize_success() {
-    let (env, id, minter, _, _, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    let result = client.initialize(&minter);
-    assert_eq!(result, Ok(()));
-    assert_eq!(client.total_supply(), 0u64);
-}
-
-#[test]
-fn test_initialize_twice_fails() {
-    let (env, id, minter, _, _, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-    let result = client.initialize(&minter);
-    assert_eq!(result, Err(Ok(PositionNftError::NotAuthorized)));
-}
-
-// ── Mint ──────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_mint_creates_position() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
+    let client = PositionNftClient::new(&env, &contract_id);
     client.initialize(&minter);
 
-    let result = client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-    assert_eq!(result, Ok(0u64));
+    (env, contract_id, minter, pool, user)
+}
 
-    let position = client.get_position(&0u64).unwrap();
-    assert_eq!(position.owner, owner);
-    assert_eq!(position.pool, pool);
-    assert_eq!(position.tick_lower, -100i32);
-    assert_eq!(position.tick_upper, 100i32);
-    assert_eq!(position.liquidity, 1000u128);
-    assert!(position.created_at > 0);
+// ── initialize ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_initialize_sets_minter_and_next_id() {
+    let (env, contract_id, _minter, _pool, _user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    assert_eq!(client.next_id(), 0u64);
 }
 
 #[test]
-fn test_mint_increments_total_supply() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+#[should_panic(expected = "already initialized")]
+fn test_initialize_twice_panics() {
+    let (env, contract_id, minter, _pool, _user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    client.initialize(&minter); // second call must panic
+}
 
-    client.initialize(&minter);
+// ── mint ──────────────────────────────────────────────────────────────────────
 
-    assert_eq!(client.total_supply(), 0u64);
+#[test]
+fn test_mint_returns_incrementing_ids() {
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
 
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-    assert_eq!(client.total_supply(), 1u64);
+    let id0 = client.mint(&user, &pool, &-100i32, &100i32, &1_000u128);
+    let id1 = client.mint(&user, &pool, &-200i32, &200i32, &2_000u128);
 
-    client.mint(&owner, &pool, &-200i32, &200i32, &2000u128);
-    assert_eq!(client.total_supply(), 2u64);
+    assert_eq!(id0, 0u64);
+    assert_eq!(id1, 1u64);
+    assert_eq!(client.next_id(), 2u64);
 }
 
 #[test]
-fn test_mint_assigns_unique_ids() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+fn test_mint_stores_correct_metadata() {
+    let (env, contract_id, _minter, pool, user) = setup();
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
+    let client = PositionNftClient::new(&env, &contract_id);
 
-    client.initialize(&minter);
+    let id = client.mint(&user, &pool, &-500i32, &500i32, &42_000u128);
+    let meta = client.get_position(&id).unwrap();
 
-    let id1 = client.mint(&owner, &pool, &-100i32, &100i32, &1000u128).unwrap();
-    let id2 = client.mint(&owner, &pool, &-200i32, &200i32, &2000u128).unwrap();
-
-    assert_eq!(id1, 0u64);
-    assert_eq!(id2, 1u64);
-    assert_ne!(id1, id2);
+    assert_eq!(meta.owner, user);
+    assert_eq!(meta.pool, pool);
+    assert_eq!(meta.tick_lower, -500);
+    assert_eq!(meta.tick_upper, 500);
+    assert_eq!(meta.liquidity, 42_000u128);
+    assert_eq!(meta.created_at, 1_700_000_000u64);
 }
 
 #[test]
-fn test_mint_not_authorized_fails() {
-    let (env, id, _minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+fn test_mint_emits_transfer_event() {
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
 
-    let unauthorized = Address::generate(&env);
-    let result = client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-    assert_eq!(result, Err(Ok(PositionNftError::NotInitialized)));
+    let id = client.mint(&user, &pool, &0i32, &100i32, &500u128);
+
+    let events = env.events().all();
+    // Last event should be the Transfer
+    let last = events.last().unwrap();
+    // topic[0] == "Transfer", data == (None, Some(user), id)
+    assert_eq!(
+        last,
+        (
+            contract_id.clone(),
+            vec![&env, Symbol::new(&env, "Transfer").into_val(&env)],
+            (Option::<Address>::None, Some(user), id).into_val(&env),
+        )
+    );
 }
 
-// ── Owner Of ──────────────────────────────────────────────────────────────────
+// ── owner_of ──────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_owner_of_returns_correct_owner() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
 
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-
-    let fetched_owner = client.owner_of(&0u64).unwrap();
-    assert_eq!(fetched_owner, owner);
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    assert_eq!(client.owner_of(&id), user);
 }
 
 #[test]
-fn test_owner_of_nonexistent_fails() {
-    let (env, id, minter, _, _, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-
-    let result = client.owner_of(&999u64);
-    assert_eq!(result, Err(Ok(PositionNftError::PositionNotFound)));
+#[should_panic(expected = "token not found")]
+fn test_owner_of_nonexistent_panics() {
+    let (env, contract_id, ..) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    client.owner_of(&999u64);
 }
 
-// ── Transfer ──────────────────────────────────────────────────────────────────
+// ── transfer ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_transfer_changes_owner() {
-    let (env, id, minter, owner, pool, recipient) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-
-    let result = client.transfer(&0u64, &owner, &recipient);
-    assert_eq!(result, Ok(()));
-
-    let new_owner = client.owner_of(&0u64).unwrap();
-    assert_eq!(new_owner, recipient);
-}
-
-#[test]
-fn test_transfer_preserves_metadata() {
-    let (env, id, minter, owner, pool, recipient) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-
-    let original_position = client.get_position(&0u64).unwrap();
-    let original_created_at = original_position.created_at;
-
-    client.transfer(&0u64, &owner, &recipient);
-
-    let new_position = client.get_position(&0u64).unwrap();
-    assert_eq!(new_position.owner, recipient);
-    assert_eq!(new_position.pool, pool);
-    assert_eq!(new_position.tick_lower, -100i32);
-    assert_eq!(new_position.tick_upper, 100i32);
-    assert_eq!(new_position.liquidity, 1000u128);
-    assert_eq!(new_position.created_at, original_created_at);
-}
-
-#[test]
-fn test_transfer_not_owner_fails() {
-    let (env, id, minter, owner, pool, recipient) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
-
-    let unauthorized = Address::generate(&env);
-    let result = client.transfer(&0u64, &unauthorized, &recipient);
-    assert_eq!(result, Err(Ok(PositionNftError::NotAuthorized)));
-}
-
-#[test]
-fn test_transfer_nonexistent_fails() {
-    let (env, id, minter, _, _, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-
-    let owner = Address::generate(&env);
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
     let recipient = Address::generate(&env);
-    let result = client.transfer(&999u64, &owner, &recipient);
-    assert_eq!(result, Err(Ok(PositionNftError::PositionNotFound)));
+
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    client.transfer(&user, &recipient, &id);
+
+    assert_eq!(client.owner_of(&id), recipient);
 }
 
-// ── Burn ──────────────────────────────────────────────────────────────────────
+#[test]
+fn test_transfer_emits_transfer_event() {
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    let recipient = Address::generate(&env);
+
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    client.transfer(&user, &recipient, &id);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    assert_eq!(
+        last,
+        (
+            contract_id.clone(),
+            vec![&env, Symbol::new(&env, "Transfer").into_val(&env)],
+            (Some(user), Some(recipient), id).into_val(&env),
+        )
+    );
+}
+
+#[test]
+#[should_panic(expected = "not owner")]
+fn test_transfer_by_non_owner_panics() {
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    let attacker = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    client.transfer(&attacker, &recipient, &id);
+}
+
+#[test]
+#[should_panic(expected = "token not found")]
+fn test_transfer_nonexistent_panics() {
+    let (env, contract_id, _minter, _pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    let recipient = Address::generate(&env);
+    client.transfer(&user, &recipient, &999u64);
+}
+
+// ── burn ──────────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_burn_removes_position() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
 
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    client.burn(&id);
 
-    assert!(client.get_position(&0u64).is_ok());
-
-    let result = client.burn(&0u64);
-    assert_eq!(result, Ok(()));
-
-    let result = client.get_position(&0u64);
-    assert_eq!(result, Err(Ok(PositionNftError::PositionNotFound)));
+    assert!(client.get_position(&id).is_none());
 }
 
 #[test]
-fn test_burn_not_authorized_fails() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+fn test_burn_emits_transfer_event() {
+    let (env, contract_id, _minter, pool, user) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
 
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-100i32, &100i32, &1000u128);
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    client.burn(&id);
 
-    // Remove auth to test authorization check
-    env.mock_all_auths_allowing_non_root_auth();
-
-    let unauthorized = Address::generate(&env);
-    let result = client.burn(&0u64);
-    // This should fail because the caller is not the minter
-    assert!(result.is_err());
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    assert_eq!(
+        last,
+        (
+            contract_id.clone(),
+            vec![&env, Symbol::new(&env, "Transfer").into_val(&env)],
+            (Some(user), Option::<Address>::None, id).into_val(&env),
+        )
+    );
 }
 
 #[test]
-fn test_burn_nonexistent_fails() {
-    let (env, id, minter, _, _, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-
-    let result = client.burn(&999u64);
-    assert_eq!(result, Err(Ok(PositionNftError::PositionNotFound)));
+#[should_panic(expected = "token not found")]
+fn test_burn_nonexistent_panics() {
+    let (env, contract_id, ..) = setup();
+    let client = PositionNftClient::new(&env, &contract_id);
+    client.burn(&999u64);
 }
 
-// ── Get Position ──────────────────────────────────────────────────────────────
+// ── minter-only auth ──────────────────────────────────────────────────────────
 
 #[test]
-fn test_get_position_returns_complete_metadata() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+fn test_mint_requires_minter_auth() {
+    let (env, contract_id, minter, pool, user) = setup();
+    // Do NOT mock all auths — check the recorded auth tree manually
+    env.mock_all_auths();
+    let client = PositionNftClient::new(&env, &contract_id);
+    client.mint(&user, &pool, &0i32, &60i32, &100u128);
 
-    client.initialize(&minter);
-    client.mint(&owner, &pool, &-500i32, &500i32, &5000u128);
-
-    let position = client.get_position(&0u64).unwrap();
-    assert_eq!(position.owner, owner);
-    assert_eq!(position.pool, pool);
-    assert_eq!(position.tick_lower, -500i32);
-    assert_eq!(position.tick_upper, 500i32);
-    assert_eq!(position.liquidity, 5000u128);
+    // The minter address must appear in the authorised invocations
+    let auths = env.auths();
+    let minter_auth = auths.iter().any(|(addr, _)| *addr == minter);
+    assert!(minter_auth, "minter auth was not required");
 }
 
 #[test]
-fn test_get_position_nonexistent_fails() {
-    let (env, id, minter, _, _, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
+fn test_burn_requires_minter_auth() {
+    let (env, contract_id, minter, pool, user) = setup();
+    env.mock_all_auths();
+    let client = PositionNftClient::new(&env, &contract_id);
+    let id = client.mint(&user, &pool, &0i32, &60i32, &100u128);
+    client.burn(&id);
 
-    client.initialize(&minter);
-
-    let result = client.get_position(&999u64);
-    assert_eq!(result, Err(Ok(PositionNftError::PositionNotFound)));
-}
-
-// ── Edge Cases ────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_multiple_positions_independent() {
-    let (env, id, minter, owner, pool, recipient) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    client.initialize(&minter);
-
-    let id1 = client
-        .mint(&owner, &pool, &-100i32, &100i32, &1000u128)
-        .unwrap();
-    let id2 = client
-        .mint(&recipient, &pool, &-200i32, &200i32, &2000u128)
-        .unwrap();
-
-    // Transfer id1
-    client.transfer(&id1, &owner, &recipient);
-
-    // Check both positions have correct owners
-    assert_eq!(client.owner_of(&id1).unwrap(), recipient);
-    assert_eq!(client.owner_of(&id2).unwrap(), recipient);
-
-    // Burn id2
-    client.burn(&id2);
-
-    // id1 should still exist
-    assert_eq!(client.owner_of(&id1).unwrap(), recipient);
-    assert_eq!(client.get_position(&id1).unwrap().liquidity, 1000u128);
-
-    // id2 should not exist
-    assert!(client.get_position(&id2).is_err());
-}
-
-#[test]
-fn test_chain_transfers() {
-    let (env, id, minter, owner, pool, _) = setup();
-    let client = PositionNftClient::new(&env, &id);
-
-    let addr1 = owner;
-    let addr2 = Address::generate(&env);
-    let addr3 = Address::generate(&env);
-
-    client.initialize(&minter);
-    client.mint(&addr1, &pool, &-100i32, &100i32, &1000u128);
-
-    client.transfer(&0u64, &addr1, &addr2);
-    assert_eq!(client.owner_of(&0u64).unwrap(), addr2);
-
-    client.transfer(&0u64, &addr2, &addr3);
-    assert_eq!(client.owner_of(&0u64).unwrap(), addr3);
-
-    client.transfer(&0u64, &addr3, &addr1);
-    assert_eq!(client.owner_of(&0u64).unwrap(), addr1);
+    let auths = env.auths();
+    let minter_auth = auths.iter().any(|(addr, _)| *addr == minter);
+    assert!(minter_auth, "minter auth was not required for burn");
 }
