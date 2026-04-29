@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -57,6 +57,13 @@ impl PositionNft {
             .instance()
             .get(&DataKey::NextId)
             .unwrap_or(0u64);
+
+        // Check for overflow
+        if id == u64::MAX {
+            return Err(PositionNftError::Overflow);
+        }
+
+        let created_at = env.ledger().timestamp();
 
         let meta = PositionMetadata {
             owner: owner.clone(),
@@ -145,6 +152,7 @@ fn require_minter(env: &Env) {
         .get(&DataKey::Minter)
         .expect("not initialized");
     minter.require_auth();
+    Ok(())
 }
 
 /// Emit a Transfer event compatible with the SDK / frontend.
