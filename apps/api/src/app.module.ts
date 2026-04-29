@@ -11,7 +11,10 @@ import { IndexerModule } from './indexer/indexer.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { AdminModule } from './admin/admin.module';
-import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { LoggingMiddleware } from './logging/logging.middleware';
+import { ApiKeysModule } from './api-keys/api-keys.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { CandlesModule } from './candles/candles.module';
 
 @Module({
   imports: [
@@ -26,6 +29,9 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
     HorizonModule,
     IndexerModule,
     AdminModule,
+    ApiKeysModule,
+    WebhooksModule,
+    CandlesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
