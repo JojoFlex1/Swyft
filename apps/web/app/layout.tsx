@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
+import { QueryProvider } from "@/context/QueryProvider";
 import { Navbar } from "@/components/Navbar";
 import { Providers } from "./providers";
 
